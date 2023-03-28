@@ -1,2 +1,5 @@
 # ppsqlsync
-Peter's Perl SQL Sync Tool - a small utility to sync SQL tables between databases
+
+Peter's Perl SQL Sync Tool
+
+This is a small utility that can be used to sync SQL tables between databases.
