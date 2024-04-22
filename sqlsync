@@ -6,31 +6,6 @@
 #
 # Copyright (c) 2023 Peter Eriksson <pen@lysator.liu.se>
 #
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-# 
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-# 
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-# 
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-# 
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-# 
 
 use strict;
 use warnings;
@@ -41,22 +16,23 @@ binmode STDOUT, ':utf8';
 binmode STDERR, ':utf8';
 
 use PPL;
+use Data::Dumper;
 use Config::Tiny;
 use Getopt::Std;
-#use Data::Dumper;
 
-my $version = "1.3.0";
+my $version = "1.3.3";
 
 
 my $f_debug = 0;
 my $f_ignore = 0;
-my $f_verbose = 0;
+my $f_verbose = (-t STDOUT);
 my $f_update = 1;
 my $f_delete = 1;
 my $f_force = 0;
 my $f_twoway = 0;
 my $f_wlock = 0;
 my $f_rlock = 0;
+my $f_synthetic = 0;
 
 my $f_primary_key = 'id';
 my $f_timestamp_key = 'updated';
@@ -121,10 +97,10 @@ sub parse_config {
 
 
 my %opts;
-getopts("hvixdnfwr2V:D:C:S:K:T:", \%opts);
+getopts("hvixdnfwtsr2V:D:C:S:K:T:", \%opts);
 if (defined $opts{h}) {
     print "Usage:\n";
-    print "  $0 [<options>]\n\n";
+    print "  $0 [<options>] [<tables>]\n\n";
     print "Options:\n";
     print "  -h           Display this information\n";
     print "  -v           Be verbose\n";
@@ -135,6 +111,7 @@ if (defined $opts{h}) {
     print "  -2           Enable partial (only updates) twoway-sync mode\n";
     print "  -w           Write-lock target table\n";
     print "  -r           Read-lock source table\n";
+    print "  -t           Generate synthetic timestamps\n";
     print "  -d           Enable debug output\n";
     print "  -K <key>     Primary key [${f_primary_key}]\n";
     print "  -T <key>     Timestamp key [${f_timestamp_key}]\n";
@@ -151,13 +128,14 @@ $f_debug++ if defined $opts{d};
 parse_config($f_cfgfile);
 parse_config($opts{C}) if defined $opts{C};
 
-$f_ignore = 1  if defined $opts{i};
-$f_force = 1   if defined $opts{f};
-$f_twoway = 1  if defined $opts{'2'};
-$f_wlock = 1   if defined $opts{w};
-$f_rlock = 1   if defined $opts{r};
-$f_update = 0  if defined $opts{n};
-$f_delete = 0  if defined $opts{x};
+$f_ignore = 1    if defined $opts{i};
+$f_force = 1     if defined $opts{f};
+$f_twoway = 1    if defined $opts{'2'};
+$f_wlock = 1     if defined $opts{w};
+$f_rlock = 1     if defined $opts{r};
+$f_update = 0    if defined $opts{n};
+$f_delete = 0    if defined $opts{x};
+$f_synthetic = 1 if defined $opts{t};
 
 $f_verbose = $opts{V} if defined $opts{V};
 $f_verbose++ if defined $opts{v};
@@ -187,7 +165,7 @@ sub spin {
 	    print STDERR "$d\b";
 	    $spin_state++;
 	    $spin_state = 0 if $spin_state > 3;
-	} else {
+	} elsif ($f_verbose > 1) {
 	    print STDERR "$c\r";
 	}
     }
@@ -299,7 +277,7 @@ sub sql_sync_table {
 	foreach my $dd (@$ddvh) {
 	    if (!defined $sdh->{$dd->{${f_primary_key}}}) {
 		if ($f_update) {
-		    if (!sql_delete($db_target, $tn, { id => $dd->{${f_primary_key}} })) {
+		    if (!sql_delete($db_target, $tn, { $f_primary_key => $dd->{${f_primary_key}} })) {
 			my $err = sql_error($db_target);
 			$ne++;
 			print STDERR "$0: Error: ${err}: While deleting ".p_row($tn, $dd)."\n";
@@ -327,8 +305,9 @@ sub sql_sync_table {
 	foreach my $k (keys %$sd) {
 	    my $v = $sd->{$k};
 	    next unless defined $v;
-	    if ($tn eq 'nodes_info' && "$v" eq '0000-00-00 00:00:00') {
-		if (defined $f_timestamp_key && ($k eq $f_timestamp_key)) {
+	    
+	    if (defined $v && "$v" eq '0000-00-00 00:00:00') {
+		if ($f_synthetic && $k eq $f_timestamp_key) {
 		    foreach my $kn (keys %$sd) {
 			my $nv = $sd->{$kn};
 			if (defined $nv && $nv =~ /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) {
@@ -345,7 +324,7 @@ sub sql_sync_table {
 		}
 	    }
 	}
-
+	
 	if (defined $f_timestamp_key &&
 	    (!defined $sd->{$f_timestamp_key} || $sd->{$f_timestamp_key} eq '0000-00-00 00:00:00')) {
 	    $ns++;
@@ -379,7 +358,7 @@ sub sql_sync_table {
 	    }
 	    if ($d > 0 || (!$f_twoway && $d != 0)) {
 		if ($f_update) {
-		    if (!sql_update($db_target, $tn, $sd, { id => $sd->{${f_primary_key}} })) {
+		    if (!sql_update($db_target, $tn, $sd, { $f_primary_key => $sd->{${f_primary_key}} })) {
 			my $err = sql_error($db_target);
 			print STDERR "$0: Error: ${err}: While updating target ".p_row($tn, $sd)."\n";
 			$ne++;
@@ -395,7 +374,7 @@ sub sql_sync_table {
 	    } elsif ($d < 0) {
 		if ($f_twoway) {
 		    if ($f_update) {
-			if (!sql_update($db_source, $tn, $dd, { id => $dd->{${f_primary_key}} })) {
+			if (!sql_update($db_source, $tn, $dd, { $f_primary_key => $dd->{${f_primary_key}} })) {
 			    my $err = sql_error($db_source);
 			    print STDERR "$0: Error: ${err}: While updating source ".p_row($tn, $dd)."\n";
 			    $ne++;
